@@ -37,8 +37,13 @@ interface ColumnDefinition {
 
 type IndexType = 'btree' | 'gin';
 
+type IndexColumn = {
+  expression: string;
+  name: string;
+};
+
 interface IndexDefinition {
-  columns: string[];
+  columns: (string | IndexColumn)[];
   indexType: IndexType;
   unique?: boolean;
 }
@@ -68,6 +73,7 @@ export async function main(): Promise<void> {
   const targetDefinition = buildTargetDefinition();
   const b = new FileBuilder();
   writeMigrations(b, startDefinition, targetDefinition);
+  console.log(b.toString());
   writeFileSync(`${SCHEMA_DIR}/v${getNextSchemaVersion()}.ts`, b.toString(), 'utf8');
   rewriteMigrationExports();
 }
@@ -186,6 +192,7 @@ function buildCreateTables(result: SchemaDefinition, resourceType: string, fhirT
       { name: '_tag', type: 'TEXT[]' },
       { name: '_profile', type: 'TEXT[]' },
       { name: '_security', type: 'TEXT[]' },
+      { name: 'token', type: 'TEXT[] DEFAULT ARRAY[]::text[] NOT NULL' },
     ],
     indexes: [
       { columns: ['lastUpdated'], indexType: 'btree' },
@@ -195,6 +202,8 @@ function buildCreateTables(result: SchemaDefinition, resourceType: string, fhirT
       { columns: ['_tag'], indexType: 'gin' },
       { columns: ['_profile'], indexType: 'gin' },
       { columns: ['_security'], indexType: 'btree' },
+      { columns: ['token'], indexType: 'gin' },
+      { columns: [{ expression: 'a2t(token) gin_trgm_ops', name: 'token_trgm' }], indexType: 'gin' },
     ],
   };
 
@@ -480,6 +489,8 @@ function migrateColumns(b: FileBuilder, startTable: TableDefinition, targetTable
     if (!startColumn) {
       writeAddColumn(b, targetTable, targetColumn);
     } else if (normalizeColumnType(startColumn) !== normalizeColumnType(targetColumn)) {
+      console.log('START ', normalizeColumnType(startColumn));
+      console.log('TARGET', normalizeColumnType(targetColumn));
       writeUpdateColumn(b, targetTable, targetColumn);
     }
   }
@@ -495,6 +506,7 @@ function normalizeColumnType(column: ColumnDefinition): string {
     .replaceAll('TIMESTAMP WITH TIME ZONE', 'TIMESTAMPTZ')
     .replaceAll(' PRIMARY KEY', '')
     .replaceAll(' DEFAULT FALSE', '')
+    .replaceAll(' DEFAULT ARRAY[]::text[]', '')
     .replaceAll(' NOT NULL', '')
     .trim();
 }
@@ -546,7 +558,14 @@ function buildIndexSql(tableName: string, index: IndexDefinition): string {
   result += 'INDEX CONCURRENTLY IF NOT EXISTS "';
   result += tableName;
   result += '_';
-  result += index.columns.join('_');
+  result += index.columns
+    .map((c) => {
+      if (typeof c === 'string') {
+        return c;
+      }
+      return c.name;
+    })
+    .join('_');
   result += '_idx" ON "';
   result += tableName;
   result += '" ';
@@ -556,7 +575,15 @@ function buildIndexSql(tableName: string, index: IndexDefinition): string {
   }
 
   result += '(';
-  result += index.columns.map((c) => `"${c}"`).join(', ');
+  result += index.columns
+    .map((c) => {
+      if (typeof c === 'string') {
+        return `"${c}"`;
+      }
+
+      return c.expression;
+    })
+    .join(', ');
   result += ')';
   return result;
 }
