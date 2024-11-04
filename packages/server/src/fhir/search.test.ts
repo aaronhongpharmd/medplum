@@ -3187,8 +3187,7 @@ describe('FHIR Search', () => {
         expect(result.entry?.map((e) => e.resource?.id)).toEqual(
           expect.arrayContaining([observation1.id, observation2.id])
         );
-      })
-    );
+      }));
 
     test('Lookup table exact match with comma disjunction', () =>
       withTestContext(async () => {
