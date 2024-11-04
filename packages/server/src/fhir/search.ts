@@ -1387,7 +1387,7 @@ function linkCanonicalReference(selectQuery: SelectQuery, currentTable: string, 
     join = new Condition(new Column(nextTableAlias, 'url'), eq, new Column(currentTable, link.details.columnName));
   }
 
-  selectQuery.join('INNER JOIN', link.resourceType, nextTableAlias, join);
+  selectQuery.join('LEFT JOIN', link.resourceType, nextTableAlias, join);
   return nextTableAlias;
 }
 

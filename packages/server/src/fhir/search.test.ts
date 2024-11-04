@@ -3138,7 +3138,7 @@ describe('FHIR Search', () => {
         expect(result.entry?.[0]?.resource?.id).toEqual(patient.id);
       }));
 
-    test.only('_filter with chained search', () =>
+    test('_filter with chained search', () =>
       withTestContext(async () => {
         const mrn = randomUUID();
         const npi = randomUUID();
@@ -3187,7 +3187,8 @@ describe('FHIR Search', () => {
         expect(result.entry?.map((e) => e.resource?.id)).toEqual(
           expect.arrayContaining([observation1.id, observation2.id])
         );
-      }));
+      })
+    );
 
     test('Lookup table exact match with comma disjunction', () =>
       withTestContext(async () => {
