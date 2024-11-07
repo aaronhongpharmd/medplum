@@ -180,11 +180,12 @@ function getTokenIndexType(searchParam: SearchParameter, resourceType: string): 
     return undefined;
   }
 
+  const details = getSearchParameterDetails(resourceType, searchParam);
+  // console.log('details', details);
+
   if (searchParam.code?.endsWith(':identifier')) {
     return TokenIndexTypes.CASE_SENSITIVE;
   }
-
-  const details = getSearchParameterDetails(resourceType, searchParam);
 
   if (!details.elementDefinitions?.length) {
     return undefined;

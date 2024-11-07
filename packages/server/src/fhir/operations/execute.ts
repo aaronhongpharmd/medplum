@@ -51,8 +51,6 @@ import { sendFhirResponse } from '../response';
 import { getBinaryStorage } from '../storage';
 import { sendAsyncResponse } from './utils/asyncjobexecutor';
 
-export const EXECUTE_CONTENT_TYPES = [ContentType.JSON, ContentType.FHIR_JSON, ContentType.TEXT, ContentType.HL7_V2];
-
 export interface BotExecutionRequest {
   readonly bot: Bot;
   readonly runAs: ProjectMembership;
@@ -97,6 +95,7 @@ export const executeHandler = asyncWrap(async (req: Request, res: Response) => {
   } else {
     const result = await executeOperation(req);
     if (isOperationOutcome(result)) {
+      // console.log('executeHandler --> sendOutcome');
       sendOutcome(res, result);
       return;
     }
@@ -105,12 +104,18 @@ export const executeHandler = asyncWrap(async (req: Request, res: Response) => {
     const outcome = result.success ? allOk : badRequest(result.logResult);
 
     if (isResource(responseBody) && responseBody.resourceType === 'Binary') {
+      // console.log('BOT executeHandler --> sendFhirResponse');
       await sendFhirResponse(req, res, outcome, responseBody);
       return;
     }
 
     // Send the response
     // The body parameter can be a Buffer object, a String, an object, Boolean, or an Array.
+    // console.log(
+    // `BOT executeHandler --> res.status(${getStatus(outcome)}).type(${getResponseContentType(req)}).send()`,
+    // getResponseContentType(req),
+    // typeof responseBody
+    // );
     res.status(getStatus(outcome)).type(getResponseContentType(req)).send(responseBody);
   }
 });
@@ -534,14 +539,16 @@ async function addBotSecrets(
   }
 }
 
+const MIRRORED_CONTENT_TYPES: string[] = [ContentType.FHIR_JSON, ContentType.TEXT, ContentType.HL7_V2];
+
 function getResponseContentType(req: Request): string {
   const requestContentType = req.get('Content-Type');
-  if (requestContentType && (EXECUTE_CONTENT_TYPES as string[]).includes(requestContentType)) {
+  if (requestContentType && MIRRORED_CONTENT_TYPES.includes(requestContentType)) {
     return requestContentType;
   }
 
-  // Default to FHIR
-  return ContentType.FHIR_JSON;
+  // Default to JSON
+  return ContentType.JSON;
 }
 
 /**

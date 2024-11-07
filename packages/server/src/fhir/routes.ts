@@ -1,4 +1,4 @@
-import { allOk, ContentType, isOk, OperationOutcomeError, stringify } from '@medplum/core';
+import { allOk, ContentType, isOk, isResource, OperationOutcomeError, stringify } from '@medplum/core';
 import { BatchEvent, FhirRequest, FhirRouter, HttpMethod } from '@medplum/fhir-router';
 import { ResourceType } from '@medplum/fhirtypes';
 import { NextFunction, Request, Response, Router } from 'express';
@@ -52,6 +52,9 @@ fhirRouter.use((req: Request, res: Response, next: NextFunction) => {
   const oldJson = res.json;
 
   res.json = (data: any) => {
+    if (!res.get('Content-Type')) {
+      console.log('JSON without Content-Type', req.method, req.path, res.statusCode, JSON.stringify(data));
+    }
     // Restore the original json to avoid double response
     // See: https://stackoverflow.com/a/60817116
     res.json = oldJson;
@@ -69,6 +72,10 @@ fhirRouter.use((req: Request, res: Response, next: NextFunction) => {
     // Unless already set, use the FHIR content type
     if (!res.get('Content-Type')) {
       res.contentType(ContentType.FHIR_JSON);
+    }
+
+    if (res.get('Content-Type')?.startsWith(ContentType.JSON)) {
+      return res.send(JSON.stringify(data));
     }
 
     let legacyFhirJsonResponseFormat: boolean | undefined;
