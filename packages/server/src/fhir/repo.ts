@@ -1269,13 +1269,13 @@ export class Repository extends FhirRepository<PoolClient> implements Disposable
       const rowTokens = new Set<string>();
       for (const t of tokens) {
         const code = t.code;
-        const system = t.system?.trim();
-        const value = t.value?.trim();
-        if (!code) {
-          console.log('no code', JSON.stringify(t));
+        const system = t.system?.trim?.();
+        const value = t.value?.trim?.();
+        if (!code || (!system && !value)) {
           continue;
         }
-        // is this necessary?
+
+        // MISSING/PRESENT
         rowTokens.add(code + DELIM);
 
         if (system) {
