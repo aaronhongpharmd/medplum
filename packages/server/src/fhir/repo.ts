@@ -89,7 +89,7 @@ import { CodingTable } from './lookups/coding';
 import { HumanNameTable } from './lookups/humanname';
 import { LookupTable } from './lookups/lookuptable';
 import { ReferenceTable } from './lookups/reference';
-import { getTokens, TokenTable, USE_TOKEN_TABLE } from './lookups/token';
+import { buildTokensForSearchParameter, LookupToken, TokenTable } from './lookups/token';
 import { ValueSetElementTable } from './lookups/valuesetelement';
 import { getPatients } from './patient';
 import { replaceConditionalReferences, validateResourceReferences } from './references';
@@ -1264,43 +1264,6 @@ export class Repository extends FhirRepository<PoolClient> implements Disposable
       content,
     };
 
-    if (!USE_TOKEN_TABLE) {
-      const tokens = getTokens(resource);
-      const rowTokens = new Set<string>();
-      for (const t of tokens) {
-        const code = t.code;
-        const system = t.system?.trim?.();
-        const value = t.value?.trim?.();
-        if (!code || (!system && !value)) {
-          continue;
-        }
-
-        // MISSING/PRESENT
-        rowTokens.add(code + DELIM);
-
-        if (system) {
-          // [parameter]=[system]|
-          rowTokens.add(code + DELIM + system);
-
-          if (value) {
-            // [parameter]=[system]|[code]
-            rowTokens.add(code + DELIM + system + DELIM + value);
-          }
-        }
-
-        if (value) {
-          // [parameter]=[code]
-          rowTokens.add(code + DELIM + DELIM + value);
-
-          if (!system) {
-            // [parameter]=|[code]
-            rowTokens.add(code + DELIM + NULL_SYSTEM + DELIM + value);
-          }
-        }
-      }
-      row.token = Array.from(rowTokens);
-    }
-
     const searchParams = getSearchParameters(resourceType);
     if (searchParams) {
       for (const searchParam of Object.values(searchParams)) {
@@ -1445,8 +1408,56 @@ export class Repository extends FhirRepository<PoolClient> implements Disposable
     const values = evalFhirPath(searchParam.expression as string, resource);
     let columnValue = null;
 
-    if (values.length > 0) {
-      if (details.array) {
+    if (details.implementation === 'token-columns') {
+      // TODO [Search by logical references](https://github.com/medplum/medplum/issues/1630) needs
+      // to be addressed again. Hmm...
+
+      const allTokens: LookupToken[] = [];
+      buildTokensForSearchParameter(allTokens, resource, searchParam);
+
+      const rowTokens = new Set<string>();
+      const rowTextTokens = new Set<string>();
+      for (const t of allTokens) {
+        const code = t.code;
+
+        const system = t.system?.trim?.();
+        const value = t.value?.trim?.();
+        if (!code || (!system && !value)) {
+          continue;
+        }
+
+        // sanity check
+        if (code !== searchParam.code) {
+          throw new Error(`Invalid token code ${code} for search parameter with code ${searchParam.code}`);
+        }
+
+        // MISSING/PRESENT - any entries in the column at all
+
+        const tokenSet = system === 'text' ? rowTextTokens : rowTokens;
+        if (system) {
+          // [parameter]=[system]|
+          tokenSet.add(system);
+
+          if (value) {
+            // [parameter]=[system]|[code]
+            tokenSet.add(system + DELIM + value);
+          }
+        }
+
+        if (value) {
+          // [parameter]=[code]
+          tokenSet.add(DELIM + value);
+
+          if (!system) {
+            // [parameter]=|[code]
+            tokenSet.add(NULL_SYSTEM + DELIM + value);
+          }
+        }
+      }
+      columns[details.columnName] = Array.from(rowTokens);
+      columns[details.columnName + 'Text'] = Array.from(rowTextTokens);
+    } else if (details.array) {
+      if (values.length > 0) {
         columnValue = values.map((v) => this.buildColumnValue(searchParam, details, v));
       } else {
         columnValue = this.buildColumnValue(searchParam, details, values[0]);
@@ -2411,7 +2422,14 @@ export class Repository extends FhirRepository<PoolClient> implements Disposable
 }
 
 export function isIndexTable(resourceType: string, searchParam: SearchParameter): boolean {
-  return !!getLookupTable(resourceType, searchParam);
+  const details = getSearchParameterDetails(resourceType, searchParam);
+  const newWay = details.implementation === 'lookup-table';
+  const oldWay = Boolean(getLookupTable(resourceType, searchParam));
+  if (newWay !== oldWay) {
+    throw new Error('Inconsistent implementation logic');
+  }
+
+  return newWay;
 }
 
 export function getLookupTable(resourceType: string, searchParam: SearchParameter): LookupTable | undefined {
