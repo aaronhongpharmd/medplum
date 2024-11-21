@@ -36,7 +36,7 @@ interface ColumnDefinition {
 
 type IndexType = 'btree' | 'gin';
 
-type IndexColumn = {
+export type IndexColumn = {
   expression: string;
   name: string;
 };
