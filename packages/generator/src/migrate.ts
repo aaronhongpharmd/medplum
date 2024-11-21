@@ -6,7 +6,6 @@ import {
   InternalTypeSchema,
   isPopulated,
   isResourceTypeSchema,
-  PropertyType,
   SearchParameterDetails,
   SearchParameterType,
 } from '@medplum/core';
@@ -14,16 +13,16 @@ import { readJson, SEARCH_PARAMETER_BUNDLE_FILES } from '@medplum/definitions';
 import { Bundle, ResourceType, SearchParameter } from '@medplum/fhirtypes';
 import { readdirSync, writeFileSync } from 'fs';
 import { resolve } from 'path';
-import { Client } from 'pg';
+import { Client, escapeIdentifier } from 'pg';
 import { FileBuilder } from './filebuilder';
 
 const SCHEMA_DIR = resolve(__dirname, '../../server/src/migrations/schema');
 
-interface SchemaDefinition {
+export interface SchemaDefinition {
   tables: TableDefinition[];
 }
 
-interface TableDefinition {
+export interface TableDefinition {
   name: string;
   columns: ColumnDefinition[];
   compositePrimaryKey?: string[];
@@ -50,7 +49,7 @@ interface IndexDefinition {
 
 const searchParams: SearchParameter[] = [];
 
-export async function main(): Promise<void> {
+export function indexStructureDefinitionsAndSearchParameters(): void {
   indexStructureDefinitionBundle(readJson('fhir/r4/profiles-types.json') as Bundle);
   indexStructureDefinitionBundle(readJson('fhir/r4/profiles-resources.json') as Bundle);
   indexStructureDefinitionBundle(readJson('fhir/r4/profiles-medplum.json') as Bundle);
@@ -68,6 +67,10 @@ export async function main(): Promise<void> {
       }
     }
   }
+}
+
+export async function main(): Promise<void> {
+  indexStructureDefinitionsAndSearchParameters();
 
   const startDefinition = await buildStartDefinition();
   const targetDefinition = buildTargetDefinition();
@@ -173,7 +176,7 @@ function buildTargetDefinition(): SchemaDefinition {
   return result;
 }
 
-function buildCreateTables(result: SchemaDefinition, resourceType: string, fhirType: InternalTypeSchema): void {
+export function buildCreateTables(result: SchemaDefinition, resourceType: string, fhirType: InternalTypeSchema): void {
   if (!isResourceTypeSchema(fhirType)) {
     // Don't create a table if fhirType is a subtype or not a resource type
     return;
@@ -192,7 +195,6 @@ function buildCreateTables(result: SchemaDefinition, resourceType: string, fhirT
       { name: '_tag', type: 'TEXT[]' },
       { name: '_profile', type: 'TEXT[]' },
       { name: '_security', type: 'TEXT[]' },
-      { name: 'token', type: 'TEXT[] DEFAULT ARRAY[]::text[] NOT NULL' },
     ],
     indexes: [
       { columns: ['lastUpdated'], indexType: 'btree' },
@@ -202,8 +204,6 @@ function buildCreateTables(result: SchemaDefinition, resourceType: string, fhirT
       { columns: ['_tag'], indexType: 'gin' },
       { columns: ['_profile'], indexType: 'gin' },
       { columns: ['_security'], indexType: 'btree' },
-      { columns: ['token'], indexType: 'gin' },
-      { columns: [{ expression: 'a2t(token) gin_trgm_ops', name: 'token_trgm' }], indexType: 'gin' },
     ],
   };
 
@@ -262,13 +262,12 @@ function buildSearchColumns(tableDefinition: TableDefinition, resourceType: stri
     }
 
     const details = getSearchParameterDetails(resourceType, searchParam);
-    if (isLookupTableParam(searchParam, details)) {
+    if (details.implementation === 'lookup-table') {
       continue;
     }
 
-    const columnName = details.columnName;
-    tableDefinition.columns.push({ name: columnName, type: getColumnType(details) });
-    tableDefinition.indexes.push({ columns: [columnName], indexType: details.array ? 'gin' : 'btree' });
+    tableDefinition.columns.push(...getSearchParameterColumns(searchParam, details));
+    tableDefinition.indexes.push(...getSearchParameterIndexes(searchParam, details));
   }
   for (const add of additionalSearchColumns) {
     if (add.table !== tableDefinition.name) {
@@ -279,79 +278,36 @@ function buildSearchColumns(tableDefinition: TableDefinition, resourceType: stri
   }
 }
 
+function getSearchParameterColumns(_searchParam: SearchParameter, details: SearchParameterDetails): ColumnDefinition[] {
+  if (details.implementation === 'token-columns') {
+    const columns: ColumnDefinition[] = [
+      { name: details.columnName, type: getColumnType(details) },
+      { name: details.columnName + 'Text', type: getColumnType(details) },
+    ];
+    return columns;
+  }
+
+  return [{ name: details.columnName, type: getColumnType(details) }];
+}
+
+function getSearchParameterIndexes(_searchParam: SearchParameter, details: SearchParameterDetails): IndexDefinition[] {
+  if (details.implementation === 'token-columns') {
+    const indexes: IndexDefinition[] = [];
+    for (const columnName of [details.columnName, details.columnName + 'Text']) {
+      indexes.push({ columns: [columnName], indexType: 'gin' });
+      indexes.push({
+        columns: [{ expression: `a2t(${escapeIdentifier(columnName)}) gin_trgm_ops`, name: columnName + '_trgm' }],
+        indexType: 'gin',
+      });
+    }
+    return indexes;
+  }
+  return [{ columns: [details.columnName], indexType: details.array ? 'gin' : 'btree' }];
+}
+
 const additionalSearchColumns = [
   { table: 'MeasureReport', column: 'period_range', type: 'TSTZRANGE', indexType: 'gist' },
 ];
-
-function isLookupTableParam(searchParam: SearchParameter, details: SearchParameterDetails): boolean {
-  // Identifier
-  if (searchParam.code === 'identifier' && searchParam.type === 'token') {
-    return true;
-  }
-
-  // HumanName
-  const nameParams = [
-    'individual-given',
-    'individual-family',
-    'Patient-name',
-    'Person-name',
-    'Practitioner-name',
-    'RelatedPerson-name',
-  ];
-  if (nameParams.includes(searchParam.id as string)) {
-    return true;
-  }
-
-  // Telecom
-  const telecomParams = [
-    'individual-telecom',
-    'individual-email',
-    'individual-phone',
-    'OrganizationAffiliation-telecom',
-    'OrganizationAffiliation-email',
-    'OrganizationAffiliation-phone',
-  ];
-  if (telecomParams.includes(searchParam.id as string)) {
-    return true;
-  }
-
-  // Address
-  const addressParams = ['individual-address', 'InsurancePlan-address', 'Location-address', 'Organization-address'];
-  if (addressParams.includes(searchParam.id as string)) {
-    return true;
-  }
-
-  // "address-"
-  if (searchParam.code?.startsWith('address-')) {
-    return true;
-  }
-
-  // Token
-  if (searchParam.type === 'token') {
-    if (searchParam.code?.endsWith(':identifier')) {
-      return true;
-    }
-
-    for (const elementDefinition of details.elementDefinitions ?? []) {
-      // Check for any "Identifier", "CodeableConcept", or "Coding"
-      // Any of those value types require the "Token" table for full system|value search semantics.
-      // The common case is that the "type" property only has one value,
-      // but we need to support arrays of types for the choice-of-type properties such as "value[x]".
-      for (const type of elementDefinition.type ?? []) {
-        if (
-          type.code === PropertyType.Identifier ||
-          type.code === PropertyType.CodeableConcept ||
-          type.code === PropertyType.Coding ||
-          type.code === PropertyType.ContactPoint
-        ) {
-          return true;
-        }
-      }
-    }
-  }
-
-  return false;
-}
 
 function getColumnType(details: SearchParameterDetails): string {
   let baseColumnType: string;
@@ -376,6 +332,20 @@ function getColumnType(details: SearchParameterDetails): string {
     default:
       baseColumnType = 'TEXT';
       break;
+  }
+
+  if (details.implementation === 'token-columns') {
+    if (baseColumnType.toLocaleUpperCase() !== 'TEXT') {
+      throw new Error('Token columns must have TEXT column type');
+    }
+
+    // To simplify we always use arrays for token columns even if they can only have a single value
+    // We should re-evaluate this decision before ever going live with inlined token columns since
+    // array columns have performance costs
+    // columnType += details.array ? `DEFAULT ARRAY[]::${baseColumnType}[] NOT NULL` : ' NOT NULL';
+
+    // e.g. 'TEXT[] DEFAULT ARRAY[]::text[] NOT NULL'
+    return `${baseColumnType}[] DEFAULT ARRAY[]::${baseColumnType}[] NOT NULL`;
   }
 
   return details.array ? baseColumnType + '[]' : baseColumnType;
