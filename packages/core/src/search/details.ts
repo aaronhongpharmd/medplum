@@ -174,7 +174,7 @@ function isLookupTableParam(searchParam: SearchParameter, builder: SearchParamet
 
   // Token
   if (isTokenParam(searchParam, builder)) {
-    console.log('SKIPPING LookupTable for token param', searchParam.id);
+    // console.log('SKIPPING LookupTable for token param', searchParam.id);
     // return true;
   }
 
